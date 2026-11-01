@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+DEFAULT_OPENROUTER_MODEL = "google/gemma-4-31b-it:free"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_REFERENCE_DATE = "2026-03-23"
 DEFAULT_DATA_DIR = "data"
@@ -20,7 +20,7 @@ PLACEHOLDER_KEY = "your_openrouter_api_key_here"
 class Settings:
     """Immutable runtime settings for the Empório da Música agent."""
 
-    openrouter_api_key: str
+    openrouter_api_key: str = field(repr=False)
     openrouter_model: str
     openrouter_base_url: str
     reference_date: date
@@ -61,6 +61,8 @@ def load_settings(
     model = os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL).strip()
     if not model:
         raise ValueError("OPENROUTER_MODEL must not be empty.")
+    if not model.endswith(":free"):
+        raise ValueError("OPENROUTER_MODEL must be an explicit free model ending in ':free'.")
 
     base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL).strip()
     if not base_url:

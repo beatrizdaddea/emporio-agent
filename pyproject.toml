@@ -6,15 +6,19 @@ build-backend = "hatchling.build"
 name = "emporio"
 version = "0.1.0"
 description = "Customer-support agent for Empório da Música"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
+    "langchain>=1.4.7",
+    "langchain-openai>=1.7.3",
     "openai>=1.0.0",
     "pypdf>=4.0.0",
     "python-dotenv>=1.0.0",
+    "streamlit>=1.38.0",
 ]
 
 [project.scripts]
 emporio = "emporio.agent:main"
+emporio-ui = "emporio.ui:main"
 
 [dependency-groups]
 dev = [
@@ -27,11 +31,13 @@ packages = ["src/emporio"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
+addopts = "-m 'not live'"
+markers = ["live: calls the real OpenRouter model (opt-in: pytest -m live)"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 src = ["src", "tests"]
 
 [tool.ruff.lint]

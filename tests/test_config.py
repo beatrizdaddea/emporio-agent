@@ -11,6 +11,7 @@ from emporio.config import (
     DEFAULT_OPENROUTER_BASE_URL,
     DEFAULT_OPENROUTER_MODEL,
     PLACEHOLDER_KEY,
+    Settings,
     load_settings,
 )
 
@@ -102,6 +103,17 @@ def test_invalid_reference_date_raises(tmp_path: Path) -> None:
         load_settings(env_file=env_file, override_env=True)
 
 
+def test_non_free_model_raises(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "OPENROUTER_API_KEY=sk-or-test\nOPENROUTER_MODEL=vendor/paid-model\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="explicit free model"):
+        load_settings(env_file=env_file, override_env=True)
+
+
 def test_missing_data_dir_raises(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -111,3 +123,16 @@ def test_missing_data_dir_raises(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="DATA_DIR"):
         load_settings(env_file=env_file, override_env=True)
+
+
+def test_settings_repr_never_contains_api_key(tmp_path: Path) -> None:
+    secret = "sk-or-secret-that-must-not-appear"
+    settings = Settings(
+        openrouter_api_key=secret,
+        openrouter_model="vendor/model:free",
+        openrouter_base_url="https://example.test/v1",
+        reference_date=date(2026, 3, 23),
+        data_dir=tmp_path,
+    )
+
+    assert secret not in repr(settings)
