@@ -1,11 +1,11 @@
 # Requirements Specification — Empório da Música Support Agent
 
-**Status:** Approved (2026-10-31), v2.
+**Status:** Approved, v2.
 
 > [!NOTE]
 > Sources inspected: the original assessment statement (`desafio_tecnico_ai_eng_artefact.pdf`, 3 pages, PT-BR, kept outside this repository), `data/políticas_da_loja.pdf` (policy manual v2.1, 8 pages), all 6 `data/*.csv`, `AGENTS.md`. Quotes are **English translations** of the PT-BR originals.
 
-## 0. Decisions log (from review, 2026-10-31)
+## 0. Decisions log
 
 | # | Topic | Decision |
 |---|---|---|
@@ -13,7 +13,7 @@
 | DEC-2 | Language | **English only**: code, docs, prompts, commits, agent replies, and example transcripts. Source data (product names, policy PDF) stays PT-BR as input; the agent answers in English. `AGENTS.md` line "replies to customers in PT-BR" will be updated (step 0) |
 | DEC-3 | Personal data | **No personal data is used.** `customers.csv` isn't loaded. Order lookup is by `order_id` only and returns no customer fields |
 | DEC-4 | Reference date | `REFERENCE_DATE=2026-03-23` (day after the last order, 2026-03-22) in `.env`/config, never `datetime.now()` |
-| DEC-5 | Git | Not initialized yet; you decide when. (Risk R-3) |
+| DEC-5 | Git | Incremental commit history (`D-02`) |
 | DEC-6 | Interface | CLI only. **Frontend/UI is not mandatory** (see IF-01) |
 
 ## 1. Sources and priority scheme
@@ -37,14 +37,14 @@
 | FR-01 | ST: "A Python project of a text-message agent that serves Empório da Música customers." | P0 | `agent.py`: function-calling loop and CLI entry point | `uv run emporio` accepts a message, prints a reply, exits on `exit`/EOF. pytest runs the loop with a stub LLM | `src/emporio/agent.py`, `tests/test_agent.py` |
 | FR-02 | ST: "Adopt a persona aligned with the store's identity and tone." POL §7.1: "informal but professional… like talking to a friend who knows music" | P0 | `prompts.py` system prompt: English replies, POL §7.1 tone, POL §7.2 flow (greet → understand → look up → answer → close) | Example transcripts: English, informal-professional tone, presents itself as the store's assistant (checklist in `examples/README.md`) | `src/emporio/prompts.py`, `examples/` |
 | FR-03 | ST: "Receive and answer messages based on the provided context." POL §7.1: "never give prices, stock or deadlines without consulting the system" | P0 | Prompt rule: state only facts returned by tools; say so when nothing is found | pytest: unknown product/order → `found: false`. Example: unknown product → no invented price | `tests/test_tools.py`, `examples/` |
-| FR-04 | ST: "Know when to query data (e.g., availability, prices, order status)" | P0 | `tools.py`: `search_products`, `get_product`, `get_order_status` (structured dicts) | pytest on real CSVs: "Takamine GD20" → id 95, R$ 2199, stock 5; violões ≤ R$ 1000 → 14 rows, 12 active with stock > 0; order 8 → `shipped`, `BRJL5544332BR`. Transcript shows the tool trace | `tests/test_tools.py`, `examples/` |
-| FR-05 | ST: "…and when to query policies (e.g., exchange rules, hours, payment methods)" | P0 | `retrieval.py`: extract the PDF at runtime, split by numbered section; `search_policies(query)` tool | pytest: "hours" → §2; "return"/"regret" → §4.1; "payment" → §3 (keyword map EN+PT terms) | `tests/test_retrieval.py`, `examples/` |
+| FR-04 | ST: "Know when to query data (e.g., availability, prices, order status)" | P0 | `tools.py`: `search_products` (with English category enum mapped to `category_id`), `get_product`, `get_order_status` (structured dicts) | pytest on real CSVs: "Takamine GD20" → id 95, R$ 2199, stock 5; violões ≤ R$ 1000 → 14 rows, 12 active with stock > 0; order 8 → `shipped`, `BRJL5544332BR`. Transcript shows the tool trace | `tests/test_tools.py`, `examples/` |
+| FR-05 | ST: "…and when to query policies (e.g., exchange rules, hours, payment methods)" | P0 | `retrieval.py`: extract the PDF at runtime, split into 28 section/subsection chunks; `search_policy(query)` tool (BM25 + EN→PT-BR glossary, top-3 passages with section/page refs) | pytest offline eval: 25 dev + 12 held-out questions retrieve the gold passage with a verbatim snippet in the top 3; 5 unsupported questions return no supporting passage (`docs/retrieval.md`) | `tests/test_retrieval.py`, `tests/test_policy_eval.py`, `examples/` |
 | FR-06 | ST: "Handle questions outside the store's scope appropriately." POL §1/§7.1: instruments only; accessories politely redirected | P0 | Prompt rules for off-topic and accessory requests | ≥ 1 transcript: off-topic plus accessory request → polite refusal and redirect, no tool fabrication | `examples/`, `src/emporio/prompts.py` |
-| FR-07 | ST: "Conversation history persistence: implement if it makes sense for the user experience." | P1 in-session / P2 across runs | `history.py`: in-memory message list per CLI session | pytest: second turn receives the first turn (stub LLM). README justifies not persisting across runs | `tests/test_history.py`, README |
+| FR-07 | ST: "Conversation history persistence: implement if it makes sense for the user experience." | P1 in-session / P2 across runs | LangGraph in-memory checkpoints plus `history.py` session transcript | pytest: second turn receives the first turn and separate sessions stay isolated (stub LLM). README justifies not persisting across runs | `tests/test_agent.py`, README |
 | FR-08 | ST: "Data handling: do whatever data treatment you judge necessary." | P1 | Typed loaders, `specs` JSON parse, empty → `None`; steps recorded in `docs/data-notes.md` | pytest: typed values; `data/` hashes unchanged | `docs/data-notes.md`, tests |
 | FR-09 | POL §6.2: promo price shown with original price and %; promotions not cumulative; PIX 5% not applied to promo prices. POL §7.3: expired promotion → transparent | P1 | `get_product` adds `active_promotion {percent, final_price}` only if `is_active == 1` | pytest: product 94 → 8%, final 5519.08; product 95 → no active promo | `tests/test_tools.py` |
 | FR-10 | POL §7.3: out of stock → suggest alternatives; discontinued → offer equivalents | P1 | Tool output includes `status`, `stock_quantity`, `available` | pytest: 96 → `available: false` (active, stock 0); 113 → `discontinued`; 130 → `coming_soon` | `tests/test_tools.py` |
-| FR-11 | POL §4.1: regret return within 7 calendar days after receipt; §4.2: defect exchange within 30 days after purchase | P1 | `check_return_eligibility(order_id)` uses `REFERENCE_DATE` (2026-03-23) | pytest: order 7 (delivered, est. 2026-02-17) → regret not eligible (34 days), defect not eligible (purchased 2026-02-03, 48 days); order 8 (`shipped`) → not delivered yet; order 17 (`cancelled`) → not applicable | `tests/test_tools.py`, `examples/` |
+| FR-11 | POL §4.1: regret return within 7 calendar days after receipt; §4.2: defect exchange within 30 days after purchase | P1 | `check_return_eligibility(order_id)` uses `REFERENCE_DATE` (2026-03-23) | pytest: order 7 (delivered, est. 2026-02-17) → regret not eligible (34 days), defect not eligible (purchased 2026-02-03, 48 days); order 8 (`shipped`) → not delivered yet; order 17 (`cancelled`) → not applicable | `tests/test_check_return.py`, `examples/` |
 
 ### 2.2 Non-functional requirements and constraints
 
@@ -63,10 +63,10 @@
 | ID | Source | Pri | Decision |
 |---|---|---|---|
 | IF-01 | ST: "Interaction interface: CLI, notebook, API, or simple UI — the focus is the agent working correctly." | P0 (at least one) | **CLI** (`uv run emporio`) |
-| IF-02 | ST: "Framework(s)/approach: RAG, function calling, ReAct, SQL agent, hybrid, etc." | P0 (justify) | **Hybrid**: function calling over CSVs plus section-level policy retrieval exposed as a tool. No vector DB (8-page doc) |
+| IF-02 | ST: "Framework(s)/approach: RAG, function calling, ReAct, SQL agent, hybrid, etc." | P0 (justify) | **Hybrid**: function calling over CSVs plus subsection-level lexical policy retrieval exposed as a tool (`search_policy`). No embeddings or vector DB (measured: not needed; see `docs/retrieval.md`). See `docs/adr/0001-agent-architecture.md` |
 
 > [!IMPORTANT]
-> **Frontend/UI is NOT mandatory.** The statement lists UI as one of four equal options. MVP = CLI. A UI is P2 and only gets built if all P0/P1 items are done before Nov 2.
+> **Frontend/UI is NOT mandatory.** The statement lists UI as one of four equal options. MVP = CLI. A UI is P2 and only gets built if all P0/P1 items are complete.
 
 ### 2.4 Expected deliverables
 
@@ -74,7 +74,7 @@
 |---|---|---|---|---|
 | D-01 | "Link to your project's public GitHub repository." | P0 | URL opens logged out | URL in email |
 | D-02 | "Keep a commit history with real progress — don't force-push everything in a single commit." | P0 | `git log` ≥ 1 commit per feature; no force-push | git history |
-| D-03 | "Don't change anything in the repository after the delivery date and time." | P0 | Last commit < deadline; freeze | `git log -1 --format=%cI` |
+| D-03 | "Don't change anything in the repository after the delivery date and time." | P0 | Repository frozen after submission | `git log -1 --format=%cI` |
 | D-04 | README: "All instructions needed to run the project: environment setup, model provider, commands, etc." | P0 | Fresh clone + README only → CLI answers one question | `README.md` |
 | D-05 | README: "Justification of technical decisions: framework, LLM, retrieval architecture, prompt strategy, etc." plus the five decision rows | P0 | One README subsection per item (7-heading checklist) | `README.md` |
 | D-06 | README: "Known limitations: and what you would do with more time." | P0 | Section present, includes §4 data issues | `README.md` |
@@ -83,7 +83,7 @@
 | D-09 | "Include 3 to 5 conversations in .md or .txt, or image file, covering varied scenarios." | P0 | 3–5 English files in `examples/`, distinct scenario types | `examples/*.md` |
 | D-10 | "At least one must show the agent handling a non-trivial situation — querying data in real time or applying policy rules." | P0 | ≥ 1 transcript with a tool trace and a policy decision (return eligibility) | `examples/*.md` |
 | D-11 | Suggested scenarios: guitars ≤ R$1000; store address; Takamine GD20 price; regret/return | P1 | Each covered by an example or test | `examples/`, `tests/` |
-| D-12 | "Reply to the email with the public repository link." | P0 (manual, you) | Email sent before deadline | out of repo |
+| D-12 | "Reply to the email with the public repository link." | P0 (manual, you) | Email sent | out of repo |
 
 ### 2.5 Evaluation criteria (stated, no numeric rubric)
 
@@ -133,8 +133,8 @@ Policy PDF: 10 numbered sections; the text extracts cleanly with `pypdf`.
 | ID | Risk | Mitigation |
 |---|---|---|
 | R-1 | OpenRouter free models: rate limits, availability changes, uneven tool-calling support | Model ID in `.env`; verify tool calling with one smoke call before step 7; README notes how to switch model |
-| R-2 | Live LLM calls need network (outside the sandbox) | Unit tests use a stub LLM; only example generation and smoke tests call OpenRouter (needs your approval each time) |
-| R-3 | D-02 needs real commit history; git isn't initialized | Recommend `git init` before the first code change (step 1) so progress is visible |
+| R-2 | Live LLM calls need network (outside the sandbox) | Unit tests use a stub LLM; only example generation and smoke tests call OpenRouter |
+| R-3 | D-02 needs real commit history | Incremental commits per feature |
 | R-4 | `AGENTS.md` said PT-BR replies | Resolved in step 0: updated to English replies (DEC-2) |
 
 ## 7. One-page minimum compliant MVP
@@ -145,7 +145,7 @@ Policy PDF: 10 numbered sections; the text extracts cleanly with `pypdf`.
 |---|---|---|
 | Config (`.env`: OpenRouter key/model/base URL, `REFERENCE_DATE`, data dir) | `config.py`, `.env.example` | NFR-03, FR-11 |
 | Tools: `search_products`, `get_product`, `get_order_status`, `check_return_eligibility` | `tools.py` | FR-04, FR-08–11, NFR-04 |
-| Policy retrieval: `search_policies` | `retrieval.py` | FR-05 |
+| Policy retrieval: `search_policy` | `retrieval.py` | FR-05 |
 | Persona, scope, grounding, English-only rules | `prompts.py` | FR-02, FR-03, FR-06, NFR-05 |
 | In-session history | `history.py` | FR-07 |
 | Agent loop and CLI | `agent.py` | FR-01, IF-01 |
@@ -153,22 +153,22 @@ Policy PDF: 10 numbered sections; the text extracts cleanly with `pypdf`.
 | 4–5 real English transcripts (guitars ≤ R$1000, address, Takamine price, return eligibility, off-topic/accessory) | `examples/` | D-09–D-11 |
 | README and `docs/data-notes.md` | root, `docs/` | D-04–D-08 |
 
-**Out of MVP:** UI, persistent history, vector DB, automated LLM eval, order mutations, customer data.
+**Out of MVP:** UI, persistent cross-run history, vector DB, order mutations, customer data, production authentication/authorization.
 
-**Definition of done:** `uv run ruff check` clean; `uv run pytest` green; fresh-clone README dry run works; every P0 row ticked with evidence; pushed to a public repo before Nov 2, 2026.
+**Definition of done:** `uv run ruff check` clean; `uv run pytest` green; fresh-clone README dry run works; every P0 row ticked with evidence; pushed to a public repo.
 
 ## 8. Prioritized plan (one small change = one commit)
 
-| # | Task | Files | Verify | Target |
-|---|---|---|---|---|
-| 0 | Requirements spec; update AGENTS.md language line | `docs/requirements.md`, `AGENTS.md` | Review | Oct 31 |
-| 1 | Scaffold: `pyproject.toml` (uv, ruff, pytest, openai SDK, pypdf), `.gitignore`, `.env.example`, `config.py` | root, `src/emporio/config.py`, `tests/test_config.py` | ruff, pytest | Oct 31 |
-| 2 | CSV loaders and cleaning plus data notes | `tools.py`, `docs/data-notes.md`, tests | pytest | Oct 31 |
-| 3 | Product tools | `tools.py`, tests | pytest | Oct 31 |
-| 4 | Order status and return eligibility | `tools.py`, tests | pytest | Nov 1 |
-| 5 | Policy retrieval tool | `retrieval.py`, tests | pytest | Nov 1 |
-| 6 | System prompt | `prompts.py` | review | Nov 1 |
-| 7 | Agent loop, history, CLI, OpenRouter smoke call | `agent.py`, `history.py`, tests | pytest and manual smoke test | Nov 1 |
-| 8 | Real example transcripts | `examples/` | checklist | Nov 2 |
-| 9 | README | `README.md` | fresh-clone dry run | Nov 2 |
-| 10 | Compliance pass, push, freeze | — | matrix ticked | Nov 2 (Nov 3 contingency) |
+| # | Task | Files | Verify |
+|---|---|---|---|
+| 0 | Requirements spec; update AGENTS.md language line | `docs/requirements.md`, `AGENTS.md` | Review |
+| 1 | Scaffold: `pyproject.toml` (uv, ruff, pytest, openai SDK, pypdf), `.gitignore`, `.env.example`, `config.py` | root, `src/emporio/config.py`, `tests/test_config.py` | ruff, pytest |
+| 2 | CSV loaders and cleaning plus data notes | `tools.py`, `docs/data-notes.md`, tests | pytest |
+| 3 | Product tools | `tools.py`, tests | pytest |
+| 4 | Order status and return eligibility | `tools.py`, tests | pytest |
+| 5 | Policy retrieval tool | `retrieval.py`, tests | pytest |
+| 6 | System prompt | `prompts.py` | review |
+| 7 | Agent loop, history, CLI, OpenRouter smoke call | `agent.py`, `history.py`, tests | pytest and manual smoke test |
+| 8 | Real example transcripts | `examples/` | checklist |
+| 9 | README | `README.md` | fresh-clone dry run |
+| 10 | Compliance pass, push, freeze | — | matrix ticked |
