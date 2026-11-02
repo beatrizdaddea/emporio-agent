@@ -22,6 +22,7 @@ emporio-ui = "emporio.ui:main"
 
 [dependency-groups]
 dev = [
+    "playwright>=1.49.0",
     "pytest>=8.0.0",
     "ruff>=0.4.0",
 ]
@@ -32,8 +33,11 @@ packages = ["src/emporio"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
-addopts = "-m 'not live'"
-markers = ["live: calls the real OpenRouter model (opt-in: pytest -m live)"]
+addopts = "-m 'not live and not e2e'"
+markers = [
+    "e2e: launches the Streamlit UI and a real browser (opt-in: pytest -m e2e)",
+    "live: calls the real OpenRouter model (opt-in: pytest -m live)",
+]
 
 [tool.ruff]
 line-length = 100

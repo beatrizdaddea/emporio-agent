@@ -20,3 +20,11 @@ dist/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Browser-test temporary output (reviewed evidence under examples/ is committed)
+playwright-report/
+test-results/
+examples/ui-evidence/.raw-videos/
+examples/ui-evidence/traces/
+examples/ui-evidence/screenshots/failures/
+examples/ui-evidence/videos/failures/
