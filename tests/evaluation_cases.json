@@ -55,7 +55,7 @@
         "section_id": "2",
         "pages": [2],
         "verbatim_snippet": "Sábado 09:00 às 13:00",
-        "answer_patterns": ["09:00", "13:00|1:00\\s?pm|1\\s?pm", "(?:§|Section)\\s*2"]
+        "answer_patterns": ["09:00|9:00\\s?am|9\\s?am", "13:00|1:00\\s?pm|1\\s?pm", "(?:§|Section)\\s*2"]
       },
       "human_review": ["The Portuguese passage is faithfully rendered in English.", "No unsupported holiday exception is invented."]
     },

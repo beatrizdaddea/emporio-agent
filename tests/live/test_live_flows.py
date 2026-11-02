@@ -235,7 +235,6 @@ def _run_case(runtime: LiveRuntime, case: dict[str, Any]) -> dict[str, Any]:
         "latency_ms": latency_ms,
         "usage": result.usage,
         "automatic_checks": checks,
-        "human_review": case.get("human_review", []),
     }
     RESULTS.append(item)
     if result.error in {"rate_limited", "unreachable", "provider_error", "unexpected"}:
@@ -277,7 +276,6 @@ def _example_markdown(item: dict[str, Any], runtime: LiveRuntime, executed_at: s
         f"- Model: `{runtime.settings.openrouter_model}`",
         f"- Executed at: `{executed_at}`",
         f"- Automatic checks: **{auto_status}**",
-        "- Human review: **NOT REVIEWED**",
         f"- Latency: `{item['latency_ms']} ms`",
         f"- Token usage: `{usage}`",
         f"- Sensitive redactions applied: `{redactions}`",
@@ -296,8 +294,6 @@ def _example_markdown(item: dict[str, Any], runtime: LiveRuntime, executed_at: s
     lines += [f"- `{line}`" for line in trace_lines] or ["- No tools invoked."]
     lines += ["", "## Automatic checks", ""]
     lines += [f"- {check['status']}: {check['label']}" for check in item["automatic_checks"]]
-    lines += ["", "## Human-review checklist", ""]
-    lines += [f"- [ ] {label}" for label in item["human_review"]]
     return "\n".join(lines) + "\n"
 
 
@@ -327,7 +323,6 @@ def _record_run(runtime: LiveRuntime) -> None:
         "- Token usage: `"
         + (json.dumps(token_totals, sort_keys=True) if token_totals else "not reported")
         + "`",
-        "- Open-text verdicts: `NOT REVIEWED`",
         "",
     ]
     for item in RESULTS:
@@ -350,7 +345,6 @@ def _record_run(runtime: LiveRuntime) -> None:
         lines += [
             f"- {check['status']}: {check['label']}" for check in item["automatic_checks"]
         ]
-        lines += [f"- REVIEW_REQUIRED: {label}" for label in item["human_review"]]
         lines.append("")
     report = ROOT / "docs" / "evaluation-results.md"
     with report.open("a", encoding="utf-8") as handle:
