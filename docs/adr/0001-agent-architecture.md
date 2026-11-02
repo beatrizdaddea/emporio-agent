@@ -1,145 +1,263 @@
-# ADR-0001: Bounded Tool-Calling Agent over Deterministic Local Data
+# ADR-0001: Source-Grounded, Bounded Customer-Support Agent
 
-- **Status:** Accepted; amended after retrieval and orchestration evaluation
-- **Inputs:** `docs/requirements.md`, `AGENTS.md`, supplied CSV files and policy PDF
+- **Status:** Accepted and updated after implementation review
+- **Scope:** orchestration, provider, data, retrieval, security, testing, and language
 
-## Context
+The original assessment statement is not stored in the repository. Requirements attributed to it
+use the provisional English transcription in docs/requirements.md.
 
-The assessment requires an English customer-support assistant that decides when to consult
-catalog, order, and policy data. The supplied snapshot is small (65 products, 20 orders, 28
-policy chunks), OpenRouter free requests are limited, customer records must not reach the model,
-and all mandatory tests must work without an API key.
+## Decision 01 — Agent Architecture
 
-## Decision
+### Context
 
-Build a hybrid system:
+The application must decide when to consult catalog, order, return, and policy data. It has one
+model-to-tools loop, no transaction, no approval branch, and no multi-agent communication.
 
-1. Deterministic, typed Python functions load and query the immutable local files.
-2. Deterministic BM25 retrieval selects verbatim policy passages.
-3. A single configurable OpenRouter free model uses function calling to choose among five
-   read-only tools and phrase the final English answer.
-4. `langchain.agents.create_agent` supplies the bounded model↔tools loop and LangGraph in-memory
-   checkpoints. No custom graph, SQL agent, vector database, or multi-agent runtime is used.
+### Decision
 
-The earlier proposal for a hand-written OpenAI SDK loop was superseded when LangChain's standard
-agent loop proved sufficient and supplied call-limit middleware and session checkpoints without
-adding an extra routing model call.
+Use langchain.agents.create_agent, which uses LangGraph internally, with five structured tools,
+InMemorySaver, call-limit middleware, and a recursion backstop. Do not build a custom graph.
 
-## Alternatives considered
+The CLI constructs the agent once and preserves model-visible in-process history. The Streamlit UI
+currently creates a new agent/checkpointer for every submitted turn; it preserves the visible and
+exported transcript, but it does not pass earlier messages to the next live model call.
 
-| Option | Decision | Reason |
+### Alternatives considered
+
+| Alternative | Outcome | Rationale |
 |---|---|---|
-| Put CSV/PDF content in the system prompt | Rejected | Sends excess data every turn, hides when data was consulted, and weakens evidence boundaries |
-| Hand-written OpenAI-compatible tool loop | Superseded | Feasible, but standard LangChain orchestration already provides the required bounded loop |
-| Custom LangGraph nodes/classifier | Rejected | No branching or human-in-the-loop workflow justifies the extra code or model call |
-| Embeddings/vector database | Rejected for this corpus | BM25 hit@3 meets the documented held-out threshold on only 28 chunks |
-| Persistent customer history | Deferred | No account/identity model is in scope; CLI sessions are short |
+| Hand-written provider tool loop | Superseded | The standard agent already supplies the bounded loop and checkpoints |
+| Custom LangGraph router | Rejected | No second workflow branch justifies extra routing code or model calls |
+| Multi-agent workflow | Rejected | No separate authorized role or task requires it |
+| Put all data in the system prompt | Rejected | Excess context and weak consultation/provenance boundaries |
 
-## Runtime design
+### Consequences and trade-offs
 
-At startup:
+The design minimizes orchestration code and supports offline fake-model testing. Framework behavior
+remains a dependency, tool schemas consume context, and the current UI does not preserve model
+context or thread-level limits across submitted turns.
 
-1. `config.py` loads `.env`, rejects missing keys and model IDs not ending in `:free`, parses
-   `REFERENCE_DATE`, and resolves `DATA_DIR`.
-2. `tools.py` validates the inspected CSV schemas and identifiers, excludes `customers.csv`, and
-   builds the read-only in-memory store.
-3. `retrieval.py` extracts the policy PDF, validates its text layer/headings, builds 28 chunks,
-   and constructs the BM25 index.
-4. `agent.py` builds one `ChatOpenAI` client and one LangChain agent with five structured tools.
+### Validation evidence
 
-Per customer turn:
+tests/test_agent.py covers tool round trips, limits, failures, CLI history, and session isolation.
+The UI helper and E2E suites cover rendered behavior but do not prove live multi-turn memory.
 
-```mermaid
-flowchart LR
-    U[CLI user message] --> A[LangChain agent]
-    P[System prompt] --> A
-    A <--> M[OpenRouter free model]
-    A --> W[Strict tool wrapper]
-    W --> C[Catalog/order/return functions]
-    W --> R[Policy BM25 retrieval]
-    C --> A
-    R --> A
-    A --> O[English reply]
-```
+## Decision 02 — LLM Provider
 
-`ModelCallLimitMiddleware` permits at most five model calls per turn and 30 per thread;
-`ToolCallLimitMiddleware` permits six tool calls per turn. A recursion limit of 40 is a final
-backstop. The SDK retry count is zero and provider fallback is disabled.
+### Context
 
-## Tool contracts
+The provider must support OpenAI-compatible function calling and a no-cost model option. Free model
+availability, rate limits, and routing can change independently of the repository.
 
-The LLM can call exactly the following tools, defined in `agent_tools.py`:
+### Decision
 
-| Tool | Arguments | Result summary |
+Use OpenRouter through ChatOpenAI. Require openrouter/free or an explicit model ending in :free;
+read credentials, model, and base URL from environment configuration; disable SDK retries.
+CLI and live evaluation disable provider fallback. The Streamlit UI exposes upstream fallback as a
+user option and enables it by default, and its auto-fallback mode can replace provider failures with
+the local deterministic model.
+
+The repository default is google/gemma-4-31b-it:free. The successful preserved live evaluation used
+nvidia/nemotron-3.5-super-vl:free, so those results apply only to that run.
+
+### Alternatives considered
+
+| Alternative | Outcome | Rationale |
 |---|---|---|
-| `search_products` | optional name substring, category enum, inclusive BRL range, status, `available_only`, limit 1–20 | `{count, total_matches, truncated, filters, products}` with price/stock/status/promotion/source |
-| `get_product` | exactly one positive `product_id` or complete `exact_name` | `{found, product, evidence}` with description/specs/source |
-| `get_order_status` | positive `order_id` | `{found, order, evidence, error}`; no customer identifier/contact fields |
-| `check_return_eligibility` | positive `order_id`, `reason=regret|defect` | deterministic time-window decision, source dates, rule section, and `not_checked` limitations |
-| `search_policy` | non-empty query up to 200 characters, `k` 1–5 | top-k verbatim passages with section/page/document/hash evidence |
+| Provider-specific SDK | Rejected | Unnecessary binding to one upstream model provider |
+| Paid model | Rejected | The implementation intentionally enforces the free-tier constraint |
+| openrouter/free auto-router | Supported, not used for preserved evaluation | Convenient but weakens model identity |
+| Automatic retry | Rejected | Consumes quota and reduces failure reproducibility |
 
-No tool performs writes, accepts arbitrary code/SQL, loads customer records, or calls a network
-service. Not-found and malformed inputs return structured data. Unexpected exceptions are logged
-by class only and become a generic `tool_failure` message.
+### Consequences and trade-offs
 
-## Retrieval decision
+Model replacement is configuration-only, but free-tier latency, availability, and tool quality are
+external risks. OpenRouter receives active conversation and selected tool data. The UI's provider
+and local fallbacks require reviewers to inspect per-turn model metadata. There is no generic
+multi-provider abstraction beyond the OpenAI-compatible endpoint.
 
-The policy is PT-BR while customer questions are English. Retrieval uses accent-folded BM25 over
-section/subsection chunks plus a hand-written English→PT-BR glossary. The model is encouraged to
-send short PT-BR keywords, but English queries also work through expansion. Results contain
-verbatim passages; lexical overlap alone is not considered an answer. See `docs/retrieval.md` for
-the labeled benchmark and limitations.
+### Validation evidence
 
-## Prompt and trust boundaries
+Configuration and smoke tests cover model restrictions and provider options. Historical attempts
+are in docs/llm-smoke.md; live Nemotron results are in docs/evaluation-results.md and examples/.
 
-- The system prompt contains behavior, not store facts.
-- Customer input is always a user message.
-- Tool output and policy passages are untrusted JSON data in tool messages.
-- Prices, stock, orders, dates, and policies must come from a current tool result.
-- Policy claims require section/page citations.
-- The assistant cannot mutate orders or retrieve customers by identity.
-- `customers.csv` is never loaded; order results exclude `customer_id`.
-- LangSmith tracing is forced off. Only the active conversation and selected non-customer tool
-  data are sent to OpenRouter.
+## Decision 03 — Structured Data
 
-Instruction labeling and role separation reduce prompt-injection risk but do not prove that every
-model will resist malicious data. The real-model injection evaluation is still pending because the
-latest live run was rate limited.
+### Context
 
-## Provider and error handling
+Prices, stock, identifiers, order states, and deadlines require exact values. The supplied data is a
+small immutable CSV snapshot and includes an unnecessary customer table.
 
-| Failure | Behavior |
-|---|---|
-| Invalid startup configuration/source schema/PDF | Fail before chat with a concise startup error |
-| Malformed tool arguments | Framework/schema error returned to the model, which may correct it within limits |
-| Unknown product/order/policy answer | Structured no-result; prompt requires an explicit not-found response |
-| HTTP 429 | Fixed rate-limit message; no retry |
-| Timeout/connection failure | Fixed unreachable message; no retry |
-| Other provider status | Fixed provider-error message; no exception body or secret logged |
-| Model/tool-call limit | Fixed step-limit response; no extra model call |
+### Decision
 
-## State and privacy
+Load inspected schemas into typed in-memory objects and expose deterministic Python functions. Use
+Decimal for money, exact identifiers, explicit availability rules, schema and referential-integrity
+validation, and structured errors. Never load customers.csv; discard customer_id from orders.
+Use REFERENCE_DATE for return decisions and disclose estimated_delivery as a proxy when actual
+delivery time is unavailable.
 
-LangGraph's `InMemorySaver` stores messages under a random thread ID for one process. The CLI also
-keeps a small readable transcript in `history.Session`. Separate sessions do not share state and
-nothing persists across runs.
+### Alternatives considered
 
-For the assessment demo, possession of an order ID permits lookup. This is not production-ready
-authorization; a deployed service must authenticate the customer and verify order ownership.
+| Alternative | Outcome | Rationale |
+|---|---|---|
+| RAG over CSV rows | Rejected | Approximate retrieval is unsuitable for exact facts |
+| Generated SQL agent | Rejected | No database exists and arbitrary querying adds agency |
+| Embed rows in prompts | Rejected | Expensive, opaque, and harder to validate |
+| Load customer records | Rejected | Not required and increases privacy exposure |
 
-## Consequences
+### Consequences and trade-offs
 
-Positive:
+Exact facts are independently testable with row evidence, but the snapshot is not a production
+system. Source anomalies are preserved rather than silently corrected. Sequential order IDs remain
+enumerable and possession of an ID is treated as sufficient access.
 
-- Exact business facts and sources are independently testable offline.
-- The model cannot invent new database queries or perform transactions.
-- Policy relevance is measurable without consuming provider quota.
-- Provider calls and tool loops have explicit upper bounds.
+### Validation evidence
 
-Negative:
+tests/test_tools.py, tests/test_order_tools.py, tests/test_check_return.py, and docs/data-notes.md.
 
-- Free-model availability and tool-choice quality remain external risks.
-- Tool schemas and message history consume context on every model call.
-- The glossary requires maintenance as policy/customer vocabulary changes.
-- Final-answer faithfulness and prompt-injection resistance still require genuine live evidence
-  and human review.
+## Decision 04 — Policy Retrieval
+
+### Context
+
+Policy rules are natural-language content in an eight-page PT-BR PDF. The corpus has only 28
+section/subsection chunks and customers may ask in English.
+
+### Decision
+
+Extract with pypdf, normalize documented layout artifacts, fail on a missing text layer or known
+heading, and build an in-memory BM25 index. Use section chunks and an English-to-PT-BR glossary.
+Return the top three verbatim passages with section, page, version, and hash evidence. Treat lexical
+overlap as candidate evidence, not proof that a passage answers the question.
+
+### Alternatives considered
+
+| Alternative | Outcome | Rationale |
+|---|---|---|
+| Fixed topic enum | Replaced | Coarse passages and model-dependent selection |
+| Local multilingual embeddings | Deferred | More dependencies with no measured hit@3 benefit |
+| Hosted embeddings | Rejected | Network, quota, privacy, and reproducibility costs |
+| Vector database | Rejected | No benefit for 28 startup-built chunks |
+
+### Consequences and trade-offs
+
+Retrieval is deterministic and offline, but English coverage depends partly on a maintained glossary,
+related non-answering passages can rank highly, and hard-coded headings intentionally reject an
+unreviewed policy version.
+
+### Validation evidence
+
+tests/test_retrieval.py, tests/test_policy_eval.py, and docs/retrieval.md.
+
+## Decision 05 — Security
+
+### Context
+
+Customer input and natural-language source fields are untrusted. The model needs read access but no
+transaction, code execution, or customer-identity capability.
+
+### Decision
+
+Use exactly five read-only tools with strict arguments; exclude arbitrary SQL, code, shell,
+filesystem, browser, payment, and messaging capabilities; exclude customer identity; sanitize
+provider/tool failures; disable LangSmith tracing; and enforce a 1,000-character input cap,
+2,048-token output cap, 30-second timeout, zero SDK retries, five model calls and six tool calls per
+turn, plus recursion backstop. Treat prompt rules as partial controls, never as proof.
+
+### Alternatives considered
+
+| Alternative | Outcome | Rationale |
+|---|---|---|
+| Second LLM guardrail | Rejected | Adds cost and another manipulable boundary |
+| Generic sanitization as injection prevention | Rejected | Legitimate text can resemble instructions |
+| State-changing tools | Rejected | Not required and materially increase impact |
+| Production authentication | Deferred | Required before deployment but beyond assessment scope |
+
+### Consequences and trade-offs
+
+Wrong model behavior cannot directly transact or execute code, but valid read calls can enumerate
+order data. There is no authentication, ownership authorization, per-user/global rate limit, or
+security proof against adaptive prompt injection.
+
+### Validation evidence
+
+docs/security/threat-model.md, docs/security/owasp-mapping.md, and the tool/privacy/error/limit tests.
+
+## Decision 06 — Testing and Evaluation
+
+### Context
+
+Provider behavior is nondeterministic and rate-limited. Exact data and retrieval behavior can be
+evaluated offline; final wording and nuanced safety require real-model observation and human review.
+
+### Decision
+
+Use layered evidence:
+
+1. Default offline pytest for tools, retrieval, fake-model orchestration, language, failures, and UI helpers.
+2. Exact policy development, held-out, unsupported, and trap benchmarks.
+3. Opt-in live OpenRouter scenarios with an 18-request ceiling, automatic checks, and preserved failures.
+4. Opt-in Playwright UI tests using the local deterministic model, with committed screenshots and
+   videos. Playwright trace archives remain local because they contain browser session metadata.
+5. Human review for open-text quality; automatic patterns are not semantic proof.
+
+### Alternatives considered
+
+| Alternative | Outcome | Rationale |
+|---|---|---|
+| Mandatory live tests | Rejected | Network and quota would make the default suite unreliable |
+| Unit tests only | Rejected | Would miss full orchestration and rendered UI behavior |
+| LLM-as-judge as final authority | Rejected | Not an independent deterministic control |
+| Label deterministic UI tests as live AI E2E | Rejected | They exercise UI/tools, not provider model quality |
+
+### Consequences and trade-offs
+
+Default checks are reproducible, but scripted models do not prove real model selection. Browser
+evidence does not prove live behavior or model memory. Only five of seven latest live responses were
+saved, so complete human review cannot be reconstructed.
+
+### Validation evidence
+
+Current observation: Ruff passed and pytest reported 172 passed, 13 deselected. Additional evidence
+is in docs/evaluation-results.md, examples/, and examples/ui-evidence/.
+
+## Decision 07 — Language Support
+
+### Context
+
+Source data remains PT-BR while customers may write in PT-BR or English. Retrieved instructions
+must not control response language.
+
+### Decision
+
+Resolve en or pt-BR in application code from the latest meaningful customer message. Explicit
+language requests take precedence; ambiguous messages preserve established session language, with
+English as the neutral first-turn default. Supply the result through a trusted per-turn system
+directive. Preserve product names, identifiers, statuses, prices, dates, and evidence references.
+Do not translate source files.
+
+### Alternatives considered
+
+| Alternative | Outcome | Rationale |
+|---|---|---|
+| LLM-only detection | Rejected | Less deterministic and more exposed to retrieved text |
+| Translate persisted sources | Rejected | Creates another truth copy and violates source preservation |
+| PT-BR only | Rejected | Does not satisfy bilingual support |
+| External detector | Rejected | Unnecessary service for two languages |
+
+### Consequences and trade-offs
+
+Language behavior is cheap and testable, but heuristic detection can misclassify short or mixed
+text. Ambiguous follow-up preservation works in the long-lived CLI session; the current UI does not
+pass previous messages to its newly constructed agent.
+
+### Validation evidence
+
+tests/test_language.py, bilingual agent tests, UI helper tests, English live examples, and PT-BR
+deterministic UI evidence.
+
+## Overall Consequences
+
+The architecture is appropriately small for the assessment: deterministic functions own exact
+facts, lexical retrieval owns evidence selection, and one bounded model owns tool choice and
+wording. It is not production-ready because authorization, durable state, global abuse controls,
+service integrations, complete live human review, and genuine UI multi-turn memory are absent.

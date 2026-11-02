@@ -21,7 +21,10 @@ All CSV files are UTF-8 encoded without BOM, comma-separated, and named `desafio
 
 ## 2. English Category Slug Mapping (`CATEGORY_SLUG_TO_ID`)
 
-Because customer conversations and tool schemas are in English (`DEC-2`) while the CSV data is in PT-BR, `src/emporio/tools.py` maps deterministic English category slugs to `category_id`:
+Customer conversations support English and PT-BR, while internal tool schemas remain in English
+(`DEC-2`) and CSV data remains in PT-BR. `src/emporio/tools.py` therefore maps deterministic
+English category slugs to `category_id`; the agent maps either customer language to the same fixed
+tool enum:
 
 | English Category Slug | `category_id` | PT-BR Name in `categories.csv` | Products in `products.csv` |
 |---|---|---|---|

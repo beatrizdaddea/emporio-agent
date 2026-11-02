@@ -33,7 +33,8 @@ flowchart LR
 - **Reproducible:** the index is rebuilt from the PDF on every load. It's a pure function of the PDF bytes, the code and the `pypdf` version pinned in `uv.lock`, and nothing is persisted. Tests assert that two loads produce identical indexes and that the PDF hash matches.
 - **Chunk = one section or subsection** (median 333 characters, max 816). Parent intros (e.g., §4) are their own chunks.
 - **Ranking:** pure-Python BM25 (k1 = 1.5, b = 0.75) over accent-folded tokens with a trailing-`s` strip and a 6-character prefix stem. Ties are broken by document order. No new dependencies.
-- **Language gap:** customers write in English and the policy is in PT-BR. Two mechanisms close it:
+- **Language handling:** PT-BR customer queries match the PT-BR policy directly. English queries
+  are supported by two complementary mechanisms:
   1. The tool description asks the LLM to send **PT-BR keywords**.
   2. A fallback: `GLOSSARY` (198 hand-written EN→PT-BR entries) expands English words.
 
@@ -95,8 +96,14 @@ Baseline before the glossary (raw English, no expansion): hit@1 9/25, hit@3 11/2
 
 ## 6. Limitations
 
-- **LLM faithfulness isn't tested offline.** The tests prove the right evidence is retrieved and that unsupported questions get no supporting passage. They can't prove the model won't paraphrase beyond the passage. Mitigations are the prompt rules and `note` field; successful live transcript evidence is still pending after a provider 429.
+- **LLM faithfulness isn't proven offline.** The tests prove the right evidence is retrieved and
+  that unsupported questions get no supporting passage. They cannot prove the model will paraphrase
+  faithfully. The latest live policy-hours case selected `search_policy` and passed its automatic
+  checks, and its saved response passed the listed human criteria; this is one observation, not a
+  general guarantee.
 - **The glossary is hand-written.** English words outside it rely on the LLM sending PT-BR keywords.
 - **Contradictions in the PDF aren't resolved**, only surfaced (`docs/data-notes.md` §4 #7–#9). The query `WhatsApp` ranks §7, §2, §5.3, so §1.2 (which has the other number) isn't in the top 3.
 - **Heading titles are hard-coded for v2.1.** A new policy version with different titles fails fast at startup and needs the heading list updated. This is intentional, not silent degradation.
-- **Tool selection remains model-dependent.** `search_policy` is wired as a strict LangChain tool in `agent_tools.py`, but the configured model's live selection behavior has not completed evaluation because the latest run was rate limited.
+- **Tool selection remains model-dependent.** The preserved Nemotron run selected `search_policy`
+  for the labeled hours question, but other models, prompts, or provider routes can behave
+  differently.

@@ -72,8 +72,19 @@ also exercised on Python 3.12; see `docs/evaluation-results.md` for the latest r
 | 2 | same | **HTTP 404 Not Found**. OpenRouter's public `/models` list no longer contains this ID |
 | 3 | `google/gemma-4-31b-it:free` (repo default, set only through the process environment; `.env` untouched) | **HTTP 429 Too Many Requests** on the first request |
 
-Result: **tool calling is still not verified live.** The configured model is now
-`google/gemma-4-31b-it:free`, whose OpenRouter metadata advertises tool support, but advertising
-isn't verification. A later end-to-end evaluation again received HTTP 429 on its first request
-(`docs/evaluation-results.md`). No retry or model fallback was used. After rotating the exposed
-local credential and restoring quota, re-run this smoke command before `uv run pytest -m live`.
+Result at that point: the isolated smoke contract had not completed. No retry or model fallback was
+used.
+
+## Later customer-agent evidence
+
+The smoke runner itself has no later successful artifact in this file. However, the customer-agent
+live evaluation subsequently completed tool cycles with
+`nvidia/nemotron-3.5-super-vl:free` on November 2, 2026. Its latest run attempted seven cases,
+passed all automatic checks, and preserved five successful transcripts. This verifies tool calling
+for that customer-agent model/configuration/run, not the smoke runner's exact forced toy-tool
+contract and not the repository's default Gemma model. See `docs/evaluation-results.md` and
+`examples/`.
+
+Re-run the isolated smoke check when validating a newly selected default model. A smoke success
+must not be generalized to customer-answer quality, and a customer-agent success must not be
+reported as execution of the exact smoke contract.

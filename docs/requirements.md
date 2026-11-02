@@ -1,20 +1,25 @@
 # Requirements Specification — Empório da Música Support Agent
 
-**Status:** Approved, v2.
+**Status:** Provisional traceability baseline, updated against the current working tree.
 
 > [!NOTE]
-> Sources inspected: the original assessment statement (`desafio_tecnico_ai_eng_artefact.pdf`, 3 pages, PT-BR, kept outside this repository), `data/políticas_da_loja.pdf` (policy manual v2.1, 8 pages), all 6 `data/*.csv`, `AGENTS.md`. Quotes are **English translations** of the PT-BR originals.
+> Sources recorded by the original implementation work: the assessment statement
+> (`desafio_tecnico_ai_eng_artefact.pdf`, 3 pages, PT-BR), `data/políticas_da_loja.pdf` (policy
+> manual v2.1, 8 pages), all six `data/*.csv`, and `AGENTS.md`. The assessment statement is not in
+> this repository or the accessible parent workspace, so its translated quotations cannot be
+> independently re-verified during the current review. The original statement remains the source
+> of truth if it differs from this transcription.
 
 ## 0. Decisions log
 
 | # | Topic | Decision |
 |---|---|---|
 | DEC-1 | LLM provider | **OpenRouter free models** via its OpenAI-compatible API. Model ID, base URL and key come from `.env`. The chosen model must support tool calling |
-| DEC-2 | Language | **English only**: code, docs, prompts, commits, agent replies, and example transcripts. Source data (product names, policy PDF) stays PT-BR as input; the agent answers in English. `AGENTS.md` line "replies to customers in PT-BR" will be updated (step 0) |
+| DEC-2 | Language | Code, identifiers, comments, technical docs and commit metadata stay in English. Customer replies support English and Brazilian Portuguese, matching the latest meaningful customer message; ambiguous follow-ups preserve the established session language. Source product names, identifiers and values stay unchanged |
 | DEC-3 | Personal data | **No personal data is used.** `customers.csv` isn't loaded. Order lookup is by `order_id` only and returns no customer fields |
 | DEC-4 | Reference date | `REFERENCE_DATE=2026-03-23` (day after the last order, 2026-03-22) in `.env`/config, never `datetime.now()` |
 | DEC-5 | Git | Incremental commit history (`D-02`) |
-| DEC-6 | Interface | CLI only. **Frontend/UI is not mandatory** (see IF-01) |
+| DEC-6 | Interface | CLI is the primary agent interface; an optional Streamlit evidence UI is also implemented (see IF-01 and the UI limitation below) |
 
 ## 1. Sources and priority scheme
 
@@ -35,7 +40,7 @@
 | ID | Source (translated quote) | Pri | Implementation | Acceptance test | Evidence |
 |---|---|---|---|---|---|
 | FR-01 | ST: "A Python project of a text-message agent that serves Empório da Música customers." | P0 | `agent.py`: function-calling loop and CLI entry point | `uv run emporio` accepts a message, prints a reply, exits on `exit`/EOF. pytest runs the loop with a stub LLM | `src/emporio/agent.py`, `tests/test_agent.py` |
-| FR-02 | ST: "Adopt a persona aligned with the store's identity and tone." POL §7.1: "informal but professional… like talking to a friend who knows music" | P0 | `prompts.py` system prompt: English replies, POL §7.1 tone, POL §7.2 flow (greet → understand → look up → answer → close) | Example transcripts: English, informal-professional tone, presents itself as the store's assistant (checklist in `examples/README.md`) | `src/emporio/prompts.py`, `examples/` |
+| FR-02 | ST: "Adopt a persona aligned with the store's identity and tone." POL §7.1: "informal but professional… like talking to a friend who knows music" | P0 | `prompts.py` system prompt: English/PT-BR response policy, POL §7.1 tone, POL §7.2 flow (greet → understand → look up → answer → close) | Regression tests cover both languages, ambiguous follow-ups and language changes; examples retain their genuine customer language | `src/emporio/language.py`, `src/emporio/prompts.py`, `tests/test_language.py`, `tests/test_agent.py` |
 | FR-03 | ST: "Receive and answer messages based on the provided context." POL §7.1: "never give prices, stock or deadlines without consulting the system" | P0 | Prompt rule: state only facts returned by tools; say so when nothing is found | pytest: unknown product/order → `found: false`. Example: unknown product → no invented price | `tests/test_tools.py`, `examples/` |
 | FR-04 | ST: "Know when to query data (e.g., availability, prices, order status)" | P0 | `tools.py`: `search_products` (with English category enum mapped to `category_id`), `get_product`, `get_order_status` (structured dicts) | pytest on real CSVs: "Takamine GD20" → id 95, R$ 2199, stock 5; violões ≤ R$ 1000 → 14 rows, 12 active with stock > 0; order 8 → `shipped`, `BRJL5544332BR`. Transcript shows the tool trace | `tests/test_tools.py`, `examples/` |
 | FR-05 | ST: "…and when to query policies (e.g., exchange rules, hours, payment methods)" | P0 | `retrieval.py`: extract the PDF at runtime, split into 28 section/subsection chunks; `search_policy(query)` tool (BM25 + EN→PT-BR glossary, top-3 passages with section/page refs) | pytest offline eval: 25 dev + 12 held-out questions retrieve the gold passage with a verbatim snippet in the top 3; 5 unsupported questions return no supporting passage (`docs/retrieval.md`) | `tests/test_retrieval.py`, `tests/test_policy_eval.py`, `examples/` |
@@ -51,10 +56,10 @@
 | ID | Source | Pri | Implementation | Acceptance test | Evidence |
 |---|---|---|---|---|---|
 | NFR-01 | ST: "Only mandatory technical constraint: Python as the main language." | P0 | Python codebase | Repo contains Python plus docs only | repo |
-| NFR-02 | ST: "…the focus is the agent working correctly." | P0 | Deterministic tools, tests, real transcripts | `uv run pytest` green; examples come from real runs | test output, `examples/` |
+| NFR-02 | ST: "…the focus is the agent working correctly." | P0 | Deterministic tools, tests, and preserved live transcripts | `uv run pytest` green; five examples come from a real OpenRouter run; human review remains partial | test output, `examples/`, `docs/evaluation-results.md` |
 | NFR-03 | ST: model/provider free choice, must be justified | P0 | OpenRouter (DEC-1); `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL` in `.env` | `.env.example` present; no key in git; README "Model" section | `.env.example`, README |
 | NFR-04 | DEC-3, POL §9 (LGPD) | P1 | `customers.csv` not loaded; order output excludes `customer_id` | pytest: `get_order_status` result has no `customer_id`/name/email/phone keys | `tests/test_tools.py` |
-| NFR-05 | DEC-2 | P1 | Prompt: always reply in English | All transcripts in English | `examples/` |
+| NFR-05 | DEC-2 | P1 | Dependency-free language resolution plus a trusted per-turn directive; retrieved content cannot set response language | PT-BR and English turns, ambiguous follow-ups, explicit changes and localized failures are tested offline | `tests/test_language.py`, `tests/test_agent.py`, `tests/test_ui_helpers.py` |
 | NFR-06 | AG | P1 | Tool output is data, never instructions (JSON tool results) | pytest: instruction-like text in a field is returned verbatim as data | `tests/test_tools.py` |
 | NFR-07 | AG | P1 | `ruff check` + `pytest` before "done" | Output pasted in each task report | — |
 
@@ -62,11 +67,14 @@
 
 | ID | Source | Pri | Decision |
 |---|---|---|---|
-| IF-01 | ST: "Interaction interface: CLI, notebook, API, or simple UI — the focus is the agent working correctly." | P0 (at least one) | **CLI** (`uv run emporio`) |
+| IF-01 | ST: "Interaction interface: CLI, notebook, API, or simple UI — the focus is the agent working correctly." | P0 (at least one) | **CLI** (`uv run emporio`) plus optional Streamlit UI (`uv run emporio-ui`) |
 | IF-02 | ST: "Framework(s)/approach: RAG, function calling, ReAct, SQL agent, hybrid, etc." | P0 (justify) | **Hybrid**: function calling over CSVs plus subsection-level lexical policy retrieval exposed as a tool (`search_policy`). No embeddings or vector DB (measured: not needed; see `docs/retrieval.md`). See `docs/adr/0001-agent-architecture.md` |
 
 > [!IMPORTANT]
-> **Frontend/UI is NOT mandatory.** The statement lists UI as one of four equal options. MVP = CLI. A UI is P2 and only gets built if all P0/P1 items are complete.
+> The statement lists UI as one of four interface options rather than a separate mandatory
+> deliverable. The CLI satisfies the interface requirement. The later Streamlit implementation is
+> supplemental evidence and has a documented history-lifecycle limitation: it creates a fresh
+> agent/checkpointer for every submitted turn.
 
 ### 2.4 Expected deliverables
 
@@ -80,12 +88,42 @@
 | D-06 | README: "Known limitations: and what you would do with more time." | P0 | Section present, includes §4 data issues | `README.md` |
 | D-07 | README: "Use of coding assistants… explain which one and how you used it." | P0 (applies) | Section names the tool and workflow | `README.md` |
 | D-08 | "Assume a reasonable interpretation, document the assumption in the README and move on." | P0 | README "Assumptions" mirrors §5 and §0 | `README.md` |
-| D-09 | "Include 3 to 5 conversations in .md or .txt, or image file, covering varied scenarios." | P0 | 3–5 English files in `examples/`, distinct scenario types | `examples/*.md` |
+| D-09 | "Include 3 to 5 conversations in .md or .txt, or image file, covering varied scenarios." | P0 | 3–5 files in `examples/`, with customer dialogue in English or PT-BR and English technical metadata | `examples/*.md` |
 | D-10 | "At least one must show the agent handling a non-trivial situation — querying data in real time or applying policy rules." | P0 | ≥ 1 transcript with a tool trace and a policy decision (return eligibility) | `examples/*.md` |
 | D-11 | Suggested scenarios: guitars ≤ R$1000; store address; Takamine GD20 price; regret/return | P1 | Each covered by an example or test | `examples/`, `tests/` |
 | D-12 | "Reply to the email with the public repository link." | P0 (manual, you) | Email sent | out of repo |
 
-### 2.5 Evaluation criteria (stated, no numeric rubric)
+### 2.5 Current compliance status
+
+Status meanings: **Implemented** is supported by current code and reproducible offline evidence;
+**Partial** has an implementation or artifact but incomplete validation; **External** cannot be
+completed or verified inside this repository; **Provisional** depends on the unavailable original
+statement transcription.
+
+| Requirement | Status | Current evidence and gap |
+|---|---|---|
+| FR-01 | Implemented | CLI entry point and agent loop are covered by `tests/test_agent.py`; `uv run emporio --version` and `--check-config` pass locally |
+| FR-02 | Partial | Persona and bilingual directives are implemented and tested offline; live open-text tone review is available for five saved examples, not all seven live cases |
+| FR-03 | Partial | Tool grounding and no-result behavior are tested; final live-model faithfulness cannot be guaranteed by deterministic tests |
+| FR-04 | Implemented | Product and order tools are exact, source-backed, and covered by offline tests and live examples |
+| FR-05 | Implemented | Policy retrieval passes the labeled offline benchmark; the latest live policy-hours case used `search_policy` and passed automatic checks |
+| FR-06 | Implemented | The saved out-of-scope live example invokes no tool and redirects to supported store topics |
+| FR-07 | Partial | CLI model-visible history works in process; there is no cross-run persistence, and the Streamlit UI currently rebuilds its checkpointer per turn |
+| FR-08–FR-11 | Implemented | Cleaning, promotions, availability, and return calculations are deterministic and tested; the delivery-date proxy remains an explicit source limitation |
+| NFR-01 | Implemented | Python is the main application language |
+| NFR-02 | Partial | Offline behavior is strongly covered and five live examples exist; full human review and repeated-model reliability evidence are incomplete |
+| NFR-03–NFR-07 | Implemented with residual risks | Configuration, privacy minimization, language rules, data boundaries, and required checks exist; provider and prompt behavior remain external risks |
+| IF-01 | Implemented | CLI and optional Streamlit UI exist |
+| IF-02 | Implemented | Hybrid function calling plus BM25 retrieval matches the code and ADR |
+| D-01 | External / observed | The configured GitHub URL is reachable without stored credentials, but repository visibility settings are external |
+| D-02 | Implemented | Fifteen incremental Conventional Commits preserve the implementation, test, security, evaluation, and documentation changes without rewriting earlier history |
+| D-03 | External | Submission deadline and post-delivery freeze cannot be established from repository contents alone |
+| D-04–D-08 | Implemented by current documentation | README documents setup, decisions, assumptions, limitations, and AI-assisted development |
+| D-09–D-10 | Implemented | Exactly five successful live conversations exist at `examples/*.md`, including tool and policy evidence |
+| D-11 | Implemented | Suggested catalog, store-policy, exact-product, and return scenarios are covered by examples or tests |
+| D-12 | External | Email delivery is outside the repository |
+
+### 2.6 Evaluation criteria (stated, no numeric rubric)
 
 "We will evaluate your logic, clarity and initiative." / "More interested in how you solve the problem and make decisions than in a perfect solution." **No metrics will be reported unless actually measured.**
 
@@ -126,7 +164,7 @@ Policy PDF: 10 numbered sections; the text extracts cleanly with `pypdf`.
 - A3. Available = `status == active` and `stock_quantity > 0`.
 - A4. Anyone with an order ID may see its status, dates, tracking and items; no customer data is exposed (DEC-3).
 - A5. No side-effect actions (no ordering, cancelling, complaint registration); complaints are redirected to the human team (POL §7.3).
-- A6. Policy content is in PT-BR; the agent translates it into English replies, and product names are kept verbatim.
+- A6. Policy content is in PT-BR; the agent preserves its meaning in the selected English or PT-BR response language. Product names, identifiers and source values remain verbatim.
 
 ## 6. Remaining risks
 
@@ -135,33 +173,40 @@ Policy PDF: 10 numbered sections; the text extracts cleanly with `pypdf`.
 | R-1 | OpenRouter free models: rate limits, availability changes, uneven tool-calling support | Model ID in `.env`; verify tool calling with one smoke call before step 7; README notes how to switch model |
 | R-2 | Live LLM calls need network (outside the sandbox) | Unit tests use a stub LLM; only example generation and smoke tests call OpenRouter |
 | R-3 | D-02 needs real commit history | Incremental commits per feature |
-| R-4 | `AGENTS.md` said PT-BR replies | Resolved in step 0: updated to English replies (DEC-2) |
+| R-4 | Ambiguous or mixed-language turns can be misclassified | Application preserves the prior language on ties; explicit language requests take precedence; regression tests cover switches and neutral follow-ups |
 
 ## 7. One-page minimum compliant MVP
 
-**Scope:** a Python CLI chat agent that answers Empório da Música customers in English, using an OpenRouter free model with function calling over the CSVs and section retrieval over the policy PDF. No personal data.
+**Implemented scope:** a Python chat agent with CLI and optional Streamlit interfaces that answers
+Empório da Música customers in English or PT-BR, using an OpenRouter free model with function
+calling over the CSVs and section retrieval over the policy PDF. Customer records are excluded.
 
 | Component | File | Covers |
 |---|---|---|
 | Config (`.env`: OpenRouter key/model/base URL, `REFERENCE_DATE`, data dir) | `config.py`, `.env.example` | NFR-03, FR-11 |
 | Tools: `search_products`, `get_product`, `get_order_status`, `check_return_eligibility` | `tools.py` | FR-04, FR-08–11, NFR-04 |
 | Policy retrieval: `search_policy` | `retrieval.py` | FR-05 |
-| Persona, scope, grounding, English-only rules | `prompts.py` | FR-02, FR-03, FR-06, NFR-05 |
+| Persona, scope, grounding and bilingual response rules | `language.py`, `prompts.py` | FR-02, FR-03, FR-06, NFR-05 |
 | In-session history | `history.py` | FR-07 |
-| Agent loop and CLI | `agent.py` | FR-01, IF-01 |
+| Agent loop, CLI, and supplemental UI | `agent.py`, `history.py`, `ui.py`, `ui_helpers.py` | FR-01, FR-07, IF-01 |
 | Tests (one per tool plus agent loop with a stub LLM) | `tests/` | NFR-02 |
-| 4–5 real English transcripts (guitars ≤ R$1000, address, Takamine price, return eligibility, off-topic/accessory) | `examples/` | D-09–D-11 |
+| 3–5 real transcripts in supported customer languages (guitars ≤ R$1000, address, Takamine price, return eligibility, off-topic/accessory) | `examples/` | D-09–D-11 |
 | README and `docs/data-notes.md` | root, `docs/` | D-04–D-08 |
 
-**Out of MVP:** UI, persistent cross-run history, vector DB, order mutations, customer data, production authentication/authorization.
+**Still out of scope:** persistent cross-run history, vector DB, order mutations, customer data,
+production authentication/authorization, and production service integrations. The supplemental UI
+is implemented but does not yet preserve model-visible history between submitted turns.
 
 **Definition of done:** `uv run ruff check` clean; `uv run pytest` green; fresh-clone README dry run works; every P0 row ticked with evidence; pushed to a public repo.
 
-## 8. Prioritized plan (one small change = one commit)
+## 8. Original implementation plan (historical)
+
+This table records the original staged plan. It is not the current repository status; the current
+status is in §2.5, and the later Streamlit/security/evaluation work extended this plan.
 
 | # | Task | Files | Verify |
 |---|---|---|---|
-| 0 | Requirements spec; update AGENTS.md language line | `docs/requirements.md`, `AGENTS.md` | Review |
+| 0 | Requirements spec and customer-language policy | `docs/requirements.md`, `AGENTS.md` | Review |
 | 1 | Scaffold: `pyproject.toml` (uv, ruff, pytest, openai SDK, pypdf), `.gitignore`, `.env.example`, `config.py` | root, `src/emporio/config.py`, `tests/test_config.py` | ruff, pytest |
 | 2 | CSV loaders and cleaning plus data notes | `tools.py`, `docs/data-notes.md`, tests | pytest |
 | 3 | Product tools | `tools.py`, tests | pytest |

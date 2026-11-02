@@ -1,60 +1,66 @@
-# Empório da Música Support Agent
+# Empório da Música — AI Customer Support Agent
 
-English-language command-line support assistant for the fictional Empório da Música
-instrument store. It uses a configurable OpenRouter free model to choose between five read-only,
-source-backed tools for catalog, order, return-window, and store-policy questions.
+## Overview
 
-## Quick start
+This repository implements a bilingual customer-support agent for Empório da Música, a fictional
+musical-instrument store. The application answers customer questions in Brazilian Portuguese or
+English and uses source-backed tools for catalog searches, order status, return-window checks, and
+store-policy retrieval.
 
-Requirements: [uv](https://docs.astral.sh/uv/) and an OpenRouter API key.
+The solution deliberately separates exact business data from language generation. Python functions
+query the supplied CSV snapshot deterministically, while a BM25 retriever selects passages from the
+PT-BR policy PDF. A configured OpenRouter model decides when to call those tools and writes the final
+customer-facing response. The repository includes a CLI, an optional Streamlit evidence UI, offline
+tests, opt-in live-model evaluation, and browser evidence.
 
-```bash
-uv python install 3.12
-uv sync --locked
-cp .env.example .env
+This is an assessment implementation, not a production customer-service deployment. In particular,
+order access has no authentication or ownership check.
+
+## Key Features
+
+- Five read-only tools for product search, product details, order status, return eligibility, and
+  policy retrieval.
+- Strict Pydantic tool arguments and structured JSON results with source-file and source-row
+  evidence.
+- Deterministic `Decimal`-based BRL handling and configurable return-deadline reference date.
+- Runtime extraction of the supplied eight-page policy PDF into 28 section-level chunks.
+- Deterministic BM25 policy ranking with an English-to-PT-BR query glossary.
+- English and PT-BR response selection, including language changes between customer turns.
+- Bounded LangChain/LangGraph model↔tool loop with fixed provider-error responses.
+- Interactive CLI and optional Streamlit UI with tool traces and transcript export.
+- Offline unit/orchestration/retrieval tests, opt-in OpenRouter evaluation, and Playwright UI tests.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    C[Customer] --> I{Interface}
+    I -->|long-lived agent| CLI[CLI session]
+    I -->|new agent per submitted turn| UI[Streamlit UI]
+    CLI --> A[LangChain create_agent]
+    UI --> A
+    A <--> L[OpenRouter free model<br/>or local deterministic UI model]
+    A --> V[Strict read-only tool boundary]
+    V --> S[Catalog, order, and return tools]
+    V --> R[BM25 policy retrieval]
+    D[Immutable CSV and PDF snapshot] --> S
+    D --> R
+    S --> A
+    R --> A
+    A --> O[English or PT-BR response]
 ```
 
-On Windows PowerShell, use `Copy-Item .env.example .env`. Put the key in the local `.env`; never
-commit that file. The configured model must be an explicit OpenRouter ID ending in `:free`.
+`langchain.agents.create_agent` provides the standard tool-calling loop and uses LangGraph
+internally. A custom graph was not needed because the application has one bounded model↔tools
+workflow and no approval, transaction, or multi-agent branch.
 
-Validate configuration without a network request, then start the chat:
+The CLI creates one agent and one in-memory checkpointer for the process, so earlier turns are
+available to later model calls. The current Streamlit implementation creates a new agent and
+checkpointer for every submitted turn. Its transcript remains visible and exportable, but prior
+turns are not currently supplied to the next live model call. This distinction is important when
+reviewing the language-switch UI evidence.
 
-```bash
-uv run emporio --check-config
-uv run emporio --trace
-```
-
-`--trace` writes tool names and concise source references to standard error. In the interactive
-CLI, type an English question, then `exit` or `quit` to finish. Example prompts:
-
-```text
-Which acoustic/classical guitars are available for R$1,000 or less?
-What's the status of order 8?
-What time do you open on Saturdays?
-```
-
-## Configuration
-
-| Variable | Purpose | Default |
-|---|---|---|
-| `OPENROUTER_API_KEY` | Local secret used only for model requests | required |
-| `OPENROUTER_MODEL` | Explicit OpenRouter free model ID | `google/gemma-4-31b-it:free` |
-| `OPENROUTER_BASE_URL` | OpenAI-compatible endpoint | `https://openrouter.ai/api/v1` |
-| `REFERENCE_DATE` | Deterministic date for return-window decisions | `2026-03-23` |
-| `DATA_DIR` | Supplied CSV and policy directory | `data` |
-
-`REFERENCE_DATE`, rather than the computer clock, is used for every return deadline.
-
-## Architecture and technical decisions
-
-### Agent framework and orchestration
-
-The agent uses `langchain.agents.create_agent` (LangGraph internally) because the required flow is
-a bounded model↔tools loop with in-session checkpoints. A custom graph would add routing code
-without a second workflow branch. Per turn, middleware allows at most five model calls and six
-tool calls; the graph recursion limit is a final backstop.
-
-The model can call exactly these read-only tools:
+The model can call only:
 
 - `search_products`
 - `get_product`
@@ -62,125 +68,294 @@ The model can call exactly these read-only tools:
 - `check_return_eligibility`
 - `search_policy`
 
-There is no generated SQL, transaction API, order mutation, customer lookup, or arbitrary tool
-dispatch. Tool arguments are validated with strict Pydantic schemas, and unexpected tool errors
-become non-sensitive structured failures.
+There is no generated SQL, customer lookup, order mutation, payment action, shell execution,
+arbitrary network tool, or writable filesystem tool.
 
-### Model provider
+## Technology Stack
 
-OpenRouter was selected because the assessment permits provider choice and exposes an
-OpenAI-compatible API with explicit free model variants. The model ID remains configuration, not
-business logic. Paid IDs are rejected. SDK retries and provider fallback are disabled because
-failed free-tier requests consume scarce quota and silently changing models would make evaluation
-less reproducible.
+The project requires Python 3.12 or later and uses `uv` for locked dependency management. Direct
+versions resolved in the current `uv.lock` are:
 
-The deterministic system works offline, but the latest genuine model run received HTTP 429 before
-tool selection. Live tool calling and the required conversation set therefore remain unverified;
-see `docs/evaluation-results.md` and `docs/llm-smoke.md`.
+| Component | Locked version | Purpose |
+|---|---:|---|
+| Python | 3.12.13 locally validated | Runtime |
+| LangChain | 1.4.7 | Agent construction and middleware |
+| LangChain OpenAI | 1.7.3 | OpenRouter-compatible chat client |
+| OpenAI Python SDK | 3.42.0 | Provider protocol and error types |
+| pypdf | 6.21.4 | Policy PDF extraction |
+| Streamlit | 1.66.1 | Optional web UI |
+| Playwright | 1.64.1 | Opt-in browser E2E tests |
+| pytest | 9.2.0 | Automated tests |
+| Ruff | 0.17.3 | Static checks |
 
-### Data and function calling
+## Project Structure
 
-CSV schemas, encoding, separators, nulls, identifiers, references, prices, and statuses are
-validated at load time. Monetary values use `Decimal` internally and two-decimal BRL strings in
-tool output. Every returned record carries its source filename and row. `customers.csv` is never
-loaded, and order output excludes `customer_id` and customer contact fields.
+```text
+src/emporio/
+  agent.py          Agent construction, bounded turn execution, and CLI
+  agent_tools.py    Strict LangChain tool schemas and wrappers
+  config.py         Environment configuration
+  history.py        Session identifier and readable transcript state
+  language.py       Deterministic English/PT-BR response-language selection
+  llm.py            Isolated OpenRouter smoke runner
+  prompts.py        System behavior and grounding policy
+  retrieval.py      PDF extraction, chunking, BM25 index, and policy search
+  tools.py          CSV loading and deterministic catalog/order/return logic
+  ui.py             Streamlit interface
+  ui_helpers.py     UI presets, deterministic test model, and evidence export
+tests/               Offline, live, and browser test suites
+data/                Supplied immutable PT-BR CSV and PDF inputs
+docs/                Requirements, architecture, retrieval, evaluation, and security notes
+examples/            Live transcripts and deterministic browser evidence
+```
 
-Tool output is JSON data, never executable instructions. Catalog and order logic is independent
-of the LLM, deterministic, and covered without an API key.
+## Getting Started
 
-### Policy retrieval
+### Prerequisites
 
-The eight-page PT-BR policy PDF is extracted at startup and split into 28 numbered section and
-subsection chunks. Retrieval uses deterministic BM25 plus a small English→PT-BR glossary and
-returns the top three verbatim passages with section, page, document version, and hash evidence.
-Embeddings and a vector database were rejected for this 28-chunk corpus: the measured held-out
-hit@3 already meets the documented threshold without network calls or a model download.
+- Python 3.12 or later, or permission for `uv` to install it.
+- [`uv`](https://docs.astral.sh/uv/).
+- An OpenRouter API key for the CLI or live UI modes. The local deterministic UI mode does not
+  make provider requests.
 
-### Prompt strategy and trust boundaries
+### Install dependencies
 
-The system prompt contains persona, English-only, scope, grounding, citation, privacy, and
-untrusted-data rules, but no store facts. Prices, stock, orders, dates, and policies must come from
-tool results in the current conversation. Unsupported facts must be reported as not found.
+```powershell
+uv python install 3.12
+uv sync --locked
+Copy-Item .env.example .env
+```
 
-Policy text and product descriptions are placed in tool messages and explicitly labeled as data.
-This reduces prompt-injection risk but does not prove resistance by every model; the real-model
-injection case is still pending.
+On macOS or Linux, replace the last command with `cp .env.example .env`.
 
-### Conversation history
+### Configure the API key
 
-LangGraph's in-memory checkpointer keeps messages under a random thread ID for one CLI session.
-Separate sessions do not share state, and nothing persists across program runs. Durable history
-was deferred because the assessment does not require accounts or a production identity model.
+Edit the uncommitted `.env` file and replace the placeholder:
 
-## Assumptions
+```dotenv
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+```
 
-- The CSV/PDF snapshot is the store system; "real time" means reading that snapshot at runtime.
-- A promotion is active exactly when `is_active == 1`.
-- Available means `status == "active"` and `stock_quantity > 0`.
-- For this demo, possession of an order ID permits a read-only lookup. This is not production
-  authorization.
-- The assistant cannot place, cancel, modify, or refund orders, or register complaints.
-- Product names remain verbatim PT-BR source data; customer-facing prose is English.
-- Because no actual delivery timestamp exists, delivered orders use `estimated_delivery` as an
-  explicitly disclosed proxy for the seven-day regret window.
+Never commit a real key. Configuration rejects paid model IDs; use `openrouter/free` or an explicit
+model ID ending in `:free`. The repository default is `google/gemma-4-31b-it:free`. The preserved
+successful live evaluation used `nvidia/nemotron-3.5-super-vl:free`, so results should not be
+generalized to every free model.
 
-## Tests and evaluation
+Validate the local configuration without making a provider request:
 
-Offline checks require no key or network:
+```powershell
+uv run emporio --check-config
+```
 
-```bash
+## Environment Variables
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `OPENROUTER_API_KEY` | CLI/live modes | none | OpenRouter credential; never written to traces or documentation |
+| `OPENROUTER_MODEL` | No | `google/gemma-4-31b-it:free` | Explicit free model or `openrouter/free` |
+| `OPENROUTER_BASE_URL` | No | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint |
+| `REFERENCE_DATE` | No | `2026-03-23` | Deterministic date for return-window decisions |
+| `DATA_DIR` | No | `data` | Directory containing the supplied CSV files and policy PDF |
+
+Return eligibility never uses `datetime.now()`; it always uses `REFERENCE_DATE`.
+
+## Running the Application
+
+### CLI
+
+```powershell
+uv run emporio --trace
+```
+
+Enter a customer question and use `exit` or `quit` to end the session. `--trace` prints concise
+tool names and source references to standard error.
+
+Example prompts:
+
+```text
+Which acoustic/classical guitars are available for R$1,000 or less?
+What's the status of order 8?
+Que horas a loja abre no sábado?
+Qual é o status do pedido 8?
+```
+
+### Streamlit UI
+
+```powershell
+uv run emporio-ui
+```
+
+The UI offers three execution modes:
+
+- **OpenRouter + auto-fallback:** may use upstream provider fallback and replaces provider failures
+  with the local deterministic model. Inspect per-turn model metadata before treating an answer as
+  live evidence.
+- **OpenRouter strict:** disables the application-level local fallback, although the provider
+  fallback checkbox remains independently configurable.
+- **Local deterministic:** uses the real LangGraph loop and application tools without calling an
+  LLM provider. This mode is for reproducible UI/tool evidence, not model-quality evaluation.
+
+If no API key is available, explicitly select local deterministic mode. The current UI otherwise
+falls back to that mode internally even if a live mode is selected.
+
+## Example Conversations
+
+Five genuine OpenRouter conversations are preserved under [`examples/`](examples/README.md):
+
+- [Filtered product search](examples/01-product-search.md)
+- [Store opening-hours policy](examples/02-store-policy.md)
+- [Order status](examples/03-order-status.md)
+- [Out-of-scope request](examples/04-out-of-scope.md)
+- [Multi-tool return decision](examples/05-return-multi-tool.md)
+
+They use `nvidia/nemotron-3.5-super-vl:free` and passed the runner's automatic checks. Five saved
+responses were subsequently reviewable against their stated human criteria; the full seven-case
+live run does not preserve verbatim replies for E06 and E08, so complete open-text review remains
+unavailable. See [structured evaluation results](docs/evaluation-results.md).
+
+## UI Testing Evidence
+
+The [UI evidence index](examples/ui-evidence/README.md) links to six screenshots and six WebM
+videos. These scenarios used
+`local/deterministic-grounded-agent:free` and made zero OpenRouter requests. They demonstrate the
+rendered Streamlit UI, tool execution, CSV access, PDF retrieval, evidence panels, and exports; they do not
+demonstrate live-model tool choice, model wording, or genuine multi-turn model memory.
+
+## Testing
+
+### Default offline checks
+
+```powershell
 uv run ruff check .
 uv run pytest
 ```
 
-The latest recorded offline run passed 156 tests with seven live tests deselected. The labeled
-core cases are in `tests/evaluation_cases.json`; policy retrieval has separate dev, held-out,
-unsupported, and trap cases.
+Observed on November 2, 2026 with Python 3.12.13:
 
-Live evaluation is opt-in, uses one model, has no retries/fallback, and enforces an 18-request
-ceiling:
+```text
+All checks passed!
+172 passed, 13 deselected in 5.61s
+```
 
-```bash
+The 13 deselected cases are seven live-provider cases and six browser E2E cases. The default suite
+uses mocked/scripted model behavior and makes no OpenRouter request.
+
+### Browser E2E
+
+```powershell
+uv run playwright install chromium
+uv run pytest -m e2e tests/e2e -q -s
+```
+
+The recorded evidence run passed six scenarios. Re-running this command overwrites the named
+artifacts under `examples/ui-evidence/`, so review the resulting Git diff before keeping them.
+
+### Live OpenRouter evaluation
+
+```powershell
 uv run pytest -m live tests/live/test_live_flows.py -q -s
 ```
 
-The latest attempt stopped after one HTTP 429. It did not produce successful assessment
-conversations. Do not treat offline scripted replies or the preserved 429 artifact as successful
-examples.
+This is opt-in, consumes provider quota, uses the local `.env`, and can rewrite the five transcript
+files when their automatic checks pass. It enforces an 18-request ceiling and disables SDK retries.
+Use a strict model/provider configuration when collecting comparable evidence.
 
-## Known limitations and next steps
+## AI Evaluation
 
-- The required 3–5 genuine conversations are incomplete because the latest provider call was rate
-  limited. They must be captured after quota is available.
-- Real-model tool selection, final-answer faithfulness, and prompt-injection resistance have not
-  passed live evaluation.
-- Order IDs are sequential and there is no authentication. A production service must authenticate
-  users and verify order ownership before exposing tracking or payment information.
-- The policy glossary is hand-maintained; unsupported wording can retrieve a lexically related but
-  non-answering passage. The prompt must still enforce the evidence contract.
-- There is no actual delivery timestamp, holiday calendar, transaction API, durable history, or
-  human handoff integration.
-- Historical order totals intentionally are not recomputed from current catalog prices. Some
-  supplied product descriptions conflict with their product names; names are treated as
-  authoritative. Full anomalies are in `docs/data-notes.md`.
-- Free-model availability and quotas can change. With more time, compare multiple explicit free
-  tool-capable models on the same labeled set, add authenticated order access, and add history
-  trimming for long sessions.
+The labeled core set contains ten scenarios in `tests/evaluation_cases.json`: catalog filtering,
+exact product facts, order status, policy hours, out-of-scope behavior, unknown entities, a
+multi-tool return decision, untrusted product text, and simulated provider 429/timeout failures.
+Policy retrieval has separate development, held-out, unsupported, and trap sets.
 
-## Use of coding assistants
+Evaluation separates three evidence levels:
 
-OpenAI Codex was used to inspect the supplied schemas, implement deterministic tools and tests,
-run local verification, and record observed provider failures. Antigravity was used for
-requirements/test-matrix design and independent review. Work was performed in small,
-human-approved tasks: each task proposed signatures/files/tests first, preserved the original
-`data/` files, and recorded failures rather than rewriting outputs to appear successful.
+1. Exact offline assertions for structured facts, tool results, source rows, errors, and retrieval.
+2. Automatic live checks for required tools, selected answer patterns, citations, and forbidden
+   patterns.
+3. Human review for usefulness, translation faithfulness, nuanced refusal, injection handling, and
+   unsupported claims.
 
-## Project structure
+The latest preserved live run attempted seven cases with Nemotron, made 13 provider requests, and
+passed all automatic checks. That is not a statistical quality score and not proof of prompt-
+injection resistance. Complete human review is unavailable because only five verbatim responses
+were saved. Earlier failed and partially passing runs remain in the evaluation log rather than
+being rewritten as successes.
 
-```text
-src/emporio/   Agent, prompts, tools, retrieval, configuration, and session state
-tests/         Offline suite plus explicitly marked optional live evaluation
-data/          Supplied immutable CSV files and policy PDF
-docs/          Requirements, ADR, data notes, retrieval and evaluation evidence
-examples/      Genuine live attempts and their review status
-```
+## Security Design
+
+Implemented controls include:
+
+- A fixed allowlist of five read-only tools with strict schemas and no arbitrary dispatch.
+- No customer-file loading and no customer identity fields in order results.
+- Fixed non-sensitive provider and unexpected-tool error messages.
+- `SecretStr` for the API key and disabled LangSmith tracing.
+- A 1,000-character input limit, 2,048-token model-output limit, 30-second model timeout, no SDK
+  retries, five model calls and six tool calls per turn, plus a graph recursion backstop.
+- Explicitly untrusted tool/PDF text and source evidence for business facts.
+- In-memory, randomly identified CLI sessions with no cross-run persistence.
+
+These controls reduce the impact of prompt injection, excessive agency, sensitive-data exposure,
+misinformation, and unbounded consumption. They do not establish production security. Order IDs
+are sequential and no authentication or ownership authorization exists; a production deployment
+must add both before exposing order data.
+
+See the [threat model](docs/security/threat-model.md) and
+[OWASP mapping](docs/security/owasp-mapping.md) for implemented controls, recommendations, and
+residual risks.
+
+## Architectural Decisions
+
+[ADR-0001](docs/adr/0001-agent-architecture.md) records the implemented decisions for agent
+orchestration, OpenRouter, deterministic structured tools, BM25 policy retrieval, least-agency
+security, testing/evaluation, and language support. Supporting detail is available in the
+[retrieval evaluation](docs/retrieval.md), [data notes](docs/data-notes.md), and
+[requirements traceability matrix](docs/requirements.md).
+
+## Operating Assumptions
+
+- The supplied CSV/PDF snapshot represents the assessment's store system; runtime lookup of that
+  snapshot is the implemented interpretation of current or real-time data.
+- A promotion is active exactly when its source `is_active` value is `1`.
+- A product is available exactly when `status == "active"` and `stock_quantity > 0`.
+- For this local demo, possession of an order ID permits a read-only lookup. This is an assessment
+  assumption, not acceptable production authorization.
+- Delivered orders use `estimated_delivery` as a disclosed proxy for the missing actual receipt
+  timestamp when evaluating the seven-day regret window.
+- Historical order totals are authoritative source values and are not recomputed from current
+  catalog prices.
+
+## Trade-offs and Known Limitations
+
+- Free model availability, latency, rate limits, routing, and tool-call quality can change.
+- LLM output is nondeterministic; automatic patterns do not replace human factual review.
+- BM25 works well on the 28-chunk labeled corpus but relies on lexical overlap and a hand-maintained
+  English glossary. A retrieved passage may be related without answering the question.
+- The Streamlit UI currently does not preserve model-visible history between turns.
+- UI auto-fallback can hide a live-provider failure unless per-turn model metadata is inspected.
+- Conversation state is process-local and not durable.
+- Order access has no authentication, authorization, or enumeration protection.
+- The CSV/PDF snapshot is treated as the store system; there is no production database, order API,
+  inventory feed, payment service, or human-handoff integration.
+- `estimated_delivery` is an explicitly disclosed proxy because the supplied orders have no actual
+  delivery timestamp.
+- Historical order totals are not recomputed from current catalog prices. Additional source
+  anomalies are documented in `docs/data-notes.md`.
+- Browser evidence covers desktop Chromium only; accessibility, mobile, Firefox, and WebKit are not
+  evaluated.
+
+## AI-Assisted Development
+
+OpenAI Codex was used for repository inspection, implementation assistance, tests, verification,
+and documentation. Antigravity was used during requirements/test-matrix design and independent
+review. The developer remained responsible for scoping changes, inspecting supplied data,
+reviewing generated code and documentation, running tests, preserving failed provider evidence,
+and deciding what entered the repository. AI-generated output was not treated as validation by
+itself.
+
+## Future Improvements
+
+1. Preserve one agent/checkpointer per Streamlit session and add a real multi-turn live test.
+2. Add authenticated order access with deterministic ownership authorization and abuse controls.
+3. Make live/local fallback status impossible to confuse in the UI and exported evidence.
+4. Persist all live responses needed for repeatable human review, including negative/security cases.
+5. Add history trimming, deployment-level request budgets, and broader adversarial evaluation.
