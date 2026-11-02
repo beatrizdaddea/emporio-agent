@@ -61,7 +61,7 @@ def load_settings(
     model = os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL).strip()
     if not model:
         raise ValueError("OPENROUTER_MODEL must not be empty.")
-    if not model.endswith(":free"):
+    if not (model.endswith(":free") or model == "openrouter/free"):
         raise ValueError("OPENROUTER_MODEL must be an explicit free model ending in ':free'.")
 
     base_url = os.getenv("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL).strip()

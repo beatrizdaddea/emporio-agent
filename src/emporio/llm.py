@@ -45,9 +45,15 @@ class SmokeCheckError(RuntimeError):
     """Raised when a live response does not satisfy the smoke contract."""
 
 
+def is_free_openrouter_model(model_id: str) -> bool:
+    """Return True when `model_id` is an explicit free OpenRouter model ID."""
+    cleaned = model_id.strip()
+    return cleaned.endswith(":free") or cleaned == "openrouter/free"
+
+
 def require_free_model(model_id: str) -> None:
     """Reject model identifiers that are not explicitly free."""
-    if not model_id.endswith(":free"):
+    if not is_free_openrouter_model(model_id):
         raise ValueError("Smoke checks require an explicit OpenRouter model ending in ':free'.")
 
 

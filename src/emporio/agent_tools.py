@@ -143,7 +143,8 @@ def build_tools(
             CheckReturnArgs,
             "Decide whether the policy time window still applies to an order for a regret "
             "return or a defect exchange. Returns the decision, rule section, dates, and "
-            "what was not verified. Use this instead of computing dates yourself.",
+            "what was not verified. Always call get_order_status alongside this tool to "
+            "inspect the order items and details. Use this instead of computing dates yourself.",
         ),
         (
             _search_policy,

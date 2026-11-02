@@ -16,7 +16,7 @@ import openai
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphRecursionError
 from pydantic import SecretStr
@@ -25,6 +25,7 @@ from emporio import __version__
 from emporio.agent_tools import build_tools, safe_tool_errors
 from emporio.config import Settings, load_settings
 from emporio.history import Session
+from emporio.language import ResponseLanguage, resolve_response_language, turn_language_directive
 from emporio.llm import require_free_model
 from emporio.prompts import SYSTEM_PROMPT
 from emporio.retrieval import POLICY_FILE, PolicyExtractionError, PolicyIndex, load_policy
@@ -34,7 +35,7 @@ LOGGER = logging.getLogger(__name__)
 
 MAX_INPUT_CHARS = 1000
 MODEL_TIMEOUT_SECONDS = 30.0
-MAX_OUTPUT_TOKENS = 700
+MAX_OUTPUT_TOKENS = 2048
 RUN_MODEL_CALL_LIMIT = 5
 THREAD_MODEL_CALL_LIMIT = 30
 RUN_TOOL_CALL_LIMIT = 6
@@ -61,6 +62,30 @@ MESSAGES = {
     "unexpected": "Something unexpected happened. Please try again.",
 }
 
+MESSAGES_PT_BR = {
+    "rate_limited": (
+        "O limite de uso do assistente foi atingido agora. Tente novamente em alguns minutos."
+    ),
+    "unreachable": "Não consegui acessar o serviço do assistente. Tente novamente.",
+    "provider_error": "Ocorreu um erro no serviço do assistente. Tente novamente mais tarde.",
+    "step_limit": (
+        "Não consegui concluir isso dentro do meu limite de etapas. Reformule ou divida a "
+        "pergunta em partes menores. Se a conversa estiver longa, reinicie a sessão."
+    ),
+    "empty_reply": "Não consegui elaborar uma resposta. Pode reformular a pergunta?",
+    "empty_input": "Digite uma mensagem para que eu possa ajudar.",
+    "input_too_long": (
+        f"Essa mensagem é muito longa. Use menos de {MAX_INPUT_CHARS} caracteres."
+    ),
+    "unexpected": "Ocorreu um erro inesperado. Tente novamente.",
+}
+
+
+def response_message(code: str, language: ResponseLanguage) -> str:
+    """Return a fixed non-leaking application message in the selected language."""
+    messages = MESSAGES_PT_BR if language == "pt-BR" else MESSAGES
+    return messages[code]
+
 
 @dataclass(frozen=True)
 class TurnResult:
@@ -75,8 +100,8 @@ class TurnResult:
 # ------------------------------------------------------------------ construction
 
 
-def build_chat_model(settings: Settings) -> Any:
-    """Create the single OpenRouter chat model: free ID only, no retries, no fallbacks."""
+def build_chat_model(settings: Settings, *, allow_provider_fallbacks: bool = False) -> Any:
+    """Create the OpenRouter chat model: free ID only, no retries, configurable free fallback."""
     from langchain_openai import ChatOpenAI
 
     require_free_model(settings.openrouter_model)
@@ -88,7 +113,12 @@ def build_chat_model(settings: Settings) -> Any:
         max_retries=0,
         timeout=MODEL_TIMEOUT_SECONDS,
         max_tokens=MAX_OUTPUT_TOKENS,
-        extra_body={"provider": {"allow_fallbacks": False, "require_parameters": True}},
+        extra_body={
+            "provider": {
+                "allow_fallbacks": allow_provider_fallbacks,
+                "require_parameters": True,
+            }
+        },
     )
 
 
@@ -155,7 +185,9 @@ def summarize_tool_result(content: str) -> str:
     except (TypeError, ValueError):
         return "unparseable"
     outcome = "error" if isinstance(data, dict) and "error" in data and len(data) == 1 else "ok"
-    if isinstance(data, dict) and (data.get("found") is False or data.get("matched") is False):
+    if isinstance(data, dict) and (
+        data.get("found") is False or data.get("matched") is False or data.get("count") == 0
+    ):
         outcome = "no_result"
     found: list[str] = []
     _sources(data, found)
@@ -197,33 +229,47 @@ def _usage(messages: Sequence[BaseMessage]) -> dict[str, int] | None:
 def run_turn(agent: Any, session: Session, user_text: str) -> TurnResult:
     """Run one bounded turn; never raises, never leaks provider or tool internals."""
     text = user_text.strip()
+    language = (
+        resolve_response_language(text, session.response_language)
+        if text
+        else session.response_language or "en"
+    )
     if not text:
-        return TurnResult(MESSAGES["empty_input"], error="empty_input")
+        return TurnResult(response_message("empty_input", language), error="empty_input")
+    session.response_language = language
     if len(text) > MAX_INPUT_CHARS:
-        return TurnResult(MESSAGES["input_too_long"], error="input_too_long")
+        return TurnResult(response_message("input_too_long", language), error="input_too_long")
 
     config = {"configurable": {"thread_id": session.thread_id}, "recursion_limit": RECURSION_LIMIT}
     try:
-        state = agent.invoke({"messages": [HumanMessage(content=text)]}, config=config)
+        state = agent.invoke(
+            {
+                "messages": [
+                    SystemMessage(content=turn_language_directive(language)),
+                    HumanMessage(content=text),
+                ]
+            },
+            config=config,
+        )
     except (ModelCallLimitExceededError, GraphRecursionError) as exc:
         LOGGER.error("agent_turn status=error error_class=%s", type(exc).__name__)
-        return TurnResult(MESSAGES["step_limit"], error="step_limit")
+        return TurnResult(response_message("step_limit", language), error="step_limit")
     except openai.RateLimitError:
         LOGGER.error("agent_turn status=error error_class=RateLimitError status_code=429")
-        return TurnResult(MESSAGES["rate_limited"], error="rate_limited")
+        return TurnResult(response_message("rate_limited", language), error="rate_limited")
     except openai.APIConnectionError as exc:  # includes APITimeoutError
         LOGGER.error("agent_turn status=error error_class=%s", type(exc).__name__)
-        return TurnResult(MESSAGES["unreachable"], error="unreachable")
+        return TurnResult(response_message("unreachable", language), error="unreachable")
     except openai.APIStatusError as exc:
         LOGGER.error(
             "agent_turn status=error error_class=%s status_code=%s",
             type(exc).__name__,
             exc.status_code,
         )
-        return TurnResult(MESSAGES["provider_error"], error="provider_error")
+        return TurnResult(response_message("provider_error", language), error="provider_error")
     except Exception as exc:
         LOGGER.error("agent_turn status=error error_class=%s", type(exc).__name__)
-        return TurnResult(MESSAGES["unexpected"], error="unexpected")
+        return TurnResult(response_message("unexpected", language), error="unexpected")
 
     messages = state["messages"]
     trace = _trace(messages)
@@ -231,7 +277,12 @@ def run_turn(agent: Any, session: Session, user_text: str) -> TurnResult:
     last = messages[-1] if messages else None
     reply = _text(last.content).strip() if isinstance(last, AIMessage) else ""
     if not reply:
-        return TurnResult(MESSAGES["empty_reply"], error="empty_reply", trace=trace, usage=usage)
+        return TurnResult(
+            response_message("empty_reply", language),
+            error="empty_reply",
+            trace=trace,
+            usage=usage,
+        )
     return TurnResult(reply, trace=trace, usage=usage)
 
 
@@ -273,7 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser."""
     parser = argparse.ArgumentParser(
         prog="emporio",
-        description="Empório da Música customer-support assistant (English).",
+        description="Empório da Música customer-support assistant (English and PT-BR).",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(

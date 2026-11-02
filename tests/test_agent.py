@@ -17,6 +17,7 @@ from emporio import agent_tools
 from emporio.agent import (
     MAX_INPUT_CHARS,
     MESSAGES,
+    MESSAGES_PT_BR,
     RUN_MODEL_CALL_LIMIT,
     build_agent,
     build_chat_model,
@@ -27,6 +28,7 @@ from emporio.agent import (
 from emporio.agent_tools import APPROVED_TOOL_NAMES
 from emporio.config import Settings
 from emporio.history import Session
+from emporio.language import TURN_LANGUAGE_PREFIX
 from emporio.prompts import SYSTEM_PROMPT
 from emporio.retrieval import POLICY_FILE, PolicyIndex, build_index, load_policy
 from emporio.tools import CatalogStore, load_store
@@ -164,10 +166,42 @@ def test_system_prompt_is_sent_and_holds_no_store_facts(store, index) -> None:
     run_turn(agent, session, "hello")
 
     system = [m for m in model.seen[0] if isinstance(m, SystemMessage)]
-    assert [m.content for m in system] == [SYSTEM_PROMPT]
+    assert system[0].content == SYSTEM_PROMPT
+    assert system[1].content.startswith(TURN_LANGUAGE_PREFIX)
     assert "English" in SYSTEM_PROMPT
+    assert "Brazilian Portuguese" in SYSTEM_PROMPT
     for fact in ("09:00", "18:00", "2199", "sete", "R$ 500", "BR4K7M2X9P1BR", "3341"):
         assert fact not in SYSTEM_PROMPT
+
+
+def test_language_directive_tracks_switches_and_ambiguous_follow_up(store, index) -> None:
+    agent, model, session = _agent(
+        store,
+        index,
+        [
+            AIMessage(content="O pedido foi encontrado."),
+            AIMessage(content="Ainda em português."),
+            AIMessage(content="Now in English."),
+        ],
+    )
+
+    assert run_turn(agent, session, "Qual é o status do pedido 8?").reply.startswith("O pedido")
+    assert run_turn(agent, session, "8?").reply == "Ainda em português."
+    assert run_turn(agent, session, "What is its status?").reply == "Now in English."
+
+    directives = []
+    for call in model.seen:
+        current = [
+            str(message.content)
+            for message in call
+            if isinstance(message, SystemMessage)
+            and str(message.content).startswith(TURN_LANGUAGE_PREFIX)
+        ]
+        directives.append(current[-1])
+    assert "Brazilian Portuguese" in directives[0]
+    assert "Brazilian Portuguese" in directives[1]
+    assert "English (en)" in directives[2]
+    assert session.response_language == "en"
 
 
 def test_latest_turn_usage_is_aggregated_when_provider_reports_it(store, index) -> None:
@@ -278,17 +312,19 @@ def test_unknown_items_surface_no_result_instead_of_data(store, index) -> None:
         index,
         [
             ai_tool("get_product", {"exact_name": "Gibson Nonexistent 9000"}, "c1"),
-            ai_tool("get_order_status", {"order_id": 9999}, "c2"),
+            ai_tool("search_products", {"query": "Gibson Nonexistent 9000"}, "c2"),
+            ai_tool("get_order_status", {"order_id": 9999}, "c3"),
             AIMessage(content="I couldn't find either."),
         ],
     )
 
     result = run_turn(agent, session, "Do you have a Gibson Nonexistent 9000 and order 9999?")
 
-    assert json.loads(_tool_messages(model, 2)[0].content)["found"] is False
-    assert json.loads(_tool_messages(model, 2)[1].content)["found"] is False
+    assert json.loads(_tool_messages(model, 3)[0].content)["found"] is False
+    assert json.loads(_tool_messages(model, 3)[1].content)["count"] == 0
+    assert json.loads(_tool_messages(model, 3)[2].content)["found"] is False
     assert [t.split()[-1] if "sources" not in t else "x" for t in result.trace if "result" in t]
-    assert sum("no_result" in t for t in result.trace) == 2
+    assert sum("no_result" in t for t in result.trace) == 3
 
 
 def test_follow_up_turn_receives_earlier_messages(store, index) -> None:
@@ -426,6 +462,22 @@ def test_over_long_or_blank_input_never_calls_the_model(store, index) -> None:
     assert model.calls == 0
 
 
+def test_fixed_application_errors_follow_the_customer_language(store, index) -> None:
+    rate_limit = _status_error(openai.RateLimitError, 429)
+    agent, _, session = _agent(store, index, [rate_limit])
+
+    result = run_turn(agent, session, "Qual é o status do pedido 8?")
+    assert result.error == "rate_limited"
+    assert result.reply == MESSAGES_PT_BR["rate_limited"]
+
+    too_long = run_turn(agent, session, "qual " + "x" * MAX_INPUT_CHARS)
+    assert too_long.error == "input_too_long"
+    assert too_long.reply == MESSAGES_PT_BR["input_too_long"]
+
+    blank = run_turn(agent, session, "  ")
+    assert blank.reply == MESSAGES_PT_BR["empty_input"]
+
+
 def test_empty_model_reply_gets_a_fixed_message(store, index) -> None:
     agent, _, session = _agent(store, index, [AIMessage(content="")])
 
@@ -493,12 +545,19 @@ def test_instruction_like_policy_text_stays_data(store) -> None:
         [ai_tool("search_policy", {"query": "trocas"}), AIMessage(content="No such rule found.")],
     )
 
-    result = run_turn(agent, session, "exchange rules?")
+    result = run_turn(agent, session, "Quais são as regras de troca?")
 
     assert result.error is None
     for call in model.seen:
         system = [m for m in call if isinstance(m, SystemMessage)]
-        assert [m.content for m in system] == [SYSTEM_PROMPT]
+        assert system[0].content == SYSTEM_PROMPT
+        directives = [
+            str(message.content)
+            for message in system
+            if str(message.content).startswith(TURN_LANGUAGE_PREFIX)
+        ]
+        assert directives
+        assert "Brazilian Portuguese" in directives[-1]
         assert all(injected not in str(m.content) for m in call if not isinstance(m, ToolMessage))
     tool_msgs = _tool_messages(model, 1)
     assert injected in tool_msgs[0].content
